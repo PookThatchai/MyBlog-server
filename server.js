@@ -46,7 +46,10 @@ app.use(express.json());
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
-  .catch((error) => console.log("MongoDB connection error:", error));
+  .catch((error) => {
+    console.error("MongoDB connection error:", error);
+    process.exit(1);
+  });
 
 app.post("/register", async (req, res) => {
   try {
@@ -60,34 +63,41 @@ app.post("/register", async (req, res) => {
 
     res.json({ user: userDoc, frontendUrl: process.env.FRONTEND_URL });
   } catch (error) {
-    res.status(400).json(error);
+    console.error("Error during registration:", error);
+    res.status(400).json({ message: "Registration failed", error });
   }
 });
 
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
-  const userDoc = await User.findOne({ username });
+  try {
+    const userDoc = await User.findOne({ username });
 
-  if (!userDoc) {
-    return res.status(400).json("User not found");
-  }
+    if (!userDoc) {
+      return res.status(400).json("User not found");
+    }
 
-  const isPasswordOk = await bcrypt.compare(password, userDoc.password);
+    const isPasswordOk = await bcrypt.compare(password, userDoc.password);
 
-  if (isPasswordOk) {
-    jwt.sign(
-      { username, id: userDoc._id },
-      secret,
-      { expiresIn: "1h" },
-      (error, token) => {
-        if (error) {
-          return res.status(500).json("Error generating token");
+    if (isPasswordOk) {
+      jwt.sign(
+        { username, id: userDoc._id },
+        secret,
+        { expiresIn: "1h" },
+        (error, token) => {
+          if (error) {
+            console.error("Error generating token:", error);
+            return res.status(500).json("Error generating token");
+          }
+          res.json({ message: "ok", token });
         }
-        res.json({ message: "ok", token });
-      }
-    );
-  } else {
-    res.status(400).json("Incorrect information");
+      );
+    } else {
+      return res.status(400).json("Incorrect password");
+    }
+  } catch (error) {
+    console.error("Error during login:", error);
+    res.status(500).json({ message: "Login failed", error });
   }
 });
 
