@@ -9,11 +9,11 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
-const uploadMiddleware = multer({ dest: "uploads/" });
+const uploadMiddleware = multer({ dest: "uploads/" }); // ใช้ multer เพื่อจัดการไฟล์ที่อัปโหลด
 require("dotenv").config();
 app.use("/uploads", express.static("uploads"));
 
-const secret = process.env.JWT_SECRET;
+const secret = process.env.JWT_SECRET || "23498ewfshrui23rwhdf";
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -21,8 +21,9 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// CORS Configuration
 const corsOptions = {
-  origin: process.env.FRONTEND_URL,
+  origin: process.env.FRONTEND_URL, // ใช้ URL ที่ตั้งใน .env
 };
 app.use(cors(corsOptions));
 
@@ -43,14 +44,10 @@ const verifyToken = (req, res, next) => {
 
 app.use(express.json());
 
-// MongoDB connection
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
-  .catch((error) => {
-    console.error("MongoDB connection error:", error);
-    process.exit(1);
-  });
+  .catch((error) => console.log("MongoDB connection error:", error));
 
 app.post("/register", async (req, res) => {
   try {
@@ -62,96 +59,181 @@ app.post("/register", async (req, res) => {
       password: hashedPassword,
     });
 
-    res.json({ user: userDoc, frontendUrl: process.env.FRONTEND_URL });
+    res.json(userDoc);
   } catch (error) {
-    console.error("Error during registration:", error);
-    res.status(400).json({ message: "Registration failed", error });
+    res.status(400).json(error);
   }
 });
 
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
-  try {
-    const userDoc = await User.findOne({ username });
+  const userDoc = await User.findOne({ username });
 
-    if (!userDoc) {
-      return res.status(400).json("User not found");
-    }
+  if (!userDoc) {
+    return res.status(400).json("User not found");
+  }
 
-    const isPasswordOk = await bcrypt.compare(password, userDoc.password);
+  const isPasswordOk = await bcrypt.compare(password, userDoc.password);
 
-    if (isPasswordOk) {
-      jwt.sign(
-        { username, id: userDoc._id },
-        secret,
-        { expiresIn: "1h" },
-        (error, token) => {
-          if (error) {
-            console.error("Error generating token:", error);
-            return res.status(500).json("Error generating token");
-          }
-          res.json({ message: "ok", token });
+  if (isPasswordOk) {
+    jwt.sign(
+      { username, id: userDoc._id },
+      secret,
+      { expiresIn: "1h" },
+      (error, token) => {
+        if (error) {
+          return res.status(500).json("Error generating token");
         }
-      );
-    } else {
-      return res.status(400).json("Incorrect password");
-    }
-  } catch (error) {
-    console.error("Error during login:", error);
-    res.status(500).json({ message: "Login failed", error });
-  }
-});
-
-app.post("/create-post", verifyToken, async (req, res) => {
-  try {
-    const { title, content } = req.body;
-
-    const newPost = await Post.create({
-      title,
-      content,
-      userId: req.user.id,
-    });
-
-    res.status(201).json(newPost);
-  } catch (error) {
-    console.error("Error creating post:", error);
-    res.status(500).json({ message: "Failed to create post", error });
-  }
-});
-
-app.get("/posts", async (req, res) => {
-  try {
-    const posts = await Post.find();
-    res.status(200).json(posts);
-  } catch (error) {
-    console.error("Error fetching posts:", error);
-    res.status(500).json({ message: "Failed to fetch posts", error });
-  }
-});
-
-app.put("/update-post/:id", verifyToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, content } = req.body;
-
-    const post = await Post.findByIdAndUpdate(
-      id,
-      { title, content },
-      { new: true }
+        res.json({ message: "ok", token });
+      }
     );
+  } else {
+    res.status(400).json("Incorrect information");
+  }
+});
 
-    if (!post) {
+app.get("/profile", verifyToken, (req, res) => {
+  const userProfile = {
+    id: req.user.id,
+    username: req.user.username,
+  };
+  res.json(userProfile);
+});
+
+app.post("/logout", (req, res) => {
+  res.json({ message: "Logged out successfully" });
+});
+
+app.post("/createpost", uploadMiddleware.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "No file uploaded" });
+  }
+
+  cloudinary.uploader.upload(req.file.path, async (error, result) => {
+    if (error) {
+      return res
+        .status(500)
+        .json({ message: "Error uploading image to Cloudinary", error });
+    }
+
+    const imageUrl = result.secure_url;
+
+    const { title, summary, content } = req.body;
+    if (!title || !summary || !content) {
+      return res.status(400).json({ message: "Incomplete data" });
+    }
+
+    const token = req.headers["authorization"]?.split(" ")[1];
+    if (!token) {
+      return res.status(403).json({ message: "No token provided" });
+    }
+
+    try {
+      const decoded = jwt.verify(token, secret);
+      const postDoc = await Post.create({
+        title,
+        summary,
+        content,
+        cover: imageUrl,
+        author: decoded.id,
+      });
+      res.json(postDoc);
+    } catch (error) {
+      return res.status(401).json({ message: "Failed to authenticate token" });
+    }
+  });
+});
+
+// ดึงข้อมูลโพสต์
+app.get("/createpost", async (req, res) => {
+  try {
+    const posts = await Post.find()
+      .sort({ createAt: -1 })
+      .populate("author", "username")
+      .limit(20);
+    res.json(posts);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching posts" });
+  }
+});
+
+app.get("/createpost/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const postDoc = await Post.findById(id).populate("author", ["username"]);
+
+    if (!postDoc) {
       return res.status(404).json({ message: "Post not found" });
     }
 
-    res.status(200).json(post);
+    res.json(postDoc);
   } catch (error) {
-    console.error("Error updating post:", error);
-    res.status(500).json({ message: "Failed to update post", error });
+    res.status(500).json({ message: "Error fetching post", error });
   }
 });
 
-// Start the server
+// แก้ไขโพสต์
+app.put(
+  "/createpost/:id",
+  uploadMiddleware.single("file"),
+  async (req, res) => {
+    const { id } = req.params; // ดึง id ของโพสต์จาก URL
+    const { title, summary, content } = req.body; // ดึงข้อมูลโพสต์จาก request body
+    let cover = req.body.cover; // ค่า cover หากไม่มีการอัปโหลดใหม่จะใช้ค่าเดิม
+
+    if (!title || !summary || !content) {
+      return res.status(400).json({ message: "Incomplete data" });
+    }
+
+    if (req.file) {
+      try {
+        const cloudinaryResult = await cloudinary.uploader.upload(
+          req.file.path
+        );
+        cover = cloudinaryResult.secure_url; // อัปเดต URL ของไฟล์ที่อัปโหลดใหม่
+      } catch (error) {
+        return res
+          .status(500)
+          .json({ message: "Error uploading image to Cloudinary", error });
+      }
+    }
+
+    const token = req.headers["authorization"]?.split(" ")[1];
+    if (!token) {
+      return res.status(403).json({ message: "No token provided" });
+    }
+
+    try {
+      const decoded = jwt.verify(token, secret);
+
+      const postDoc = await Post.findById(id);
+
+      if (!postDoc) {
+        return res.status(404).json({ message: "Post not found" });
+      }
+
+      if (postDoc.author.toString() !== decoded.id) {
+        return res
+          .status(403)
+          .json({ message: "You are not authorized to edit this post" });
+      }
+      postDoc.title = title;
+      postDoc.summary = summary;
+      postDoc.content = content;
+      postDoc.cover = cover;
+      await postDoc.save();
+
+      res.json({ message: "Post updated successfully", post: postDoc });
+    } catch (error) {
+      console.error(error);
+      return res
+        .status(500)
+        .json({ message: "Error during post update", error });
+    }
+  }
+);
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
